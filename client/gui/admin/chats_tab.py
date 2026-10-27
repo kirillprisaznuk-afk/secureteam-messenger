@@ -17,7 +17,7 @@ from PyQt5.QtWidgets import (
 
 from client.controller import background
 from client.gui.conversation_view import ROW_PRESENTATION, ConversationDelegate
-from client.gui.styles import DARK_THEME, configure_table, style_table_item
+from client.gui.styles import DARK_THEME, configure_table, literal_tooltip, style_table_item
 from client.network import NetworkClient
 
 
@@ -82,7 +82,7 @@ class MembersDialog(QDialog):
 
             style_table_item(id_item, muted=True, centered=True)
             style_table_item(username_item)
-            member_item.setToolTip(f"Include {username} in this conversation")
+            member_item.setToolTip(literal_tooltip(f"Include {username} in this conversation"))
             self.table.setItem(row, 0, id_item)
             self.table.setItem(row, 1, username_item)
             self.table.setItem(row, 2, member_item)
@@ -219,7 +219,7 @@ class ChatsTab(QWidget):
                 " · Archived" if archived else " · Active"
             )
             item.setData(ROW_PRESENTATION, {"title": name, "subtitle": detail})
-            item.setToolTip(f"{name}\n{detail}")
+            item.setToolTip(literal_tooltip(f"{name}\n{detail}"))
             self.chats_list.addItem(item)
 
             if prev_chat_id is not None and chat_id == prev_chat_id:

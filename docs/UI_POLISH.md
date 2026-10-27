@@ -63,14 +63,14 @@ read-only and existing permissions/actions are preserved.
 
 ## Visual and automated verification
 
-Local verification used Windows, Python 3.12.14 and PyQt5 5.15.11. All **87 tests**
-passed: the existing 82 tests plus five presentation checks. Ruff lint, format,
+Local verification used Windows, Python 3.12.14 and PyQt5 5.15.11. All **88 tests**
+passed: the existing 82 tests plus six presentation checks. Ruff lint, format,
 source compilation, documentation links, and the candidate-file privacy scan passed.
 A wheel build verified that both SVGs are packaged and no database/key files are
 included. Remote CI results are reported with the published commit in the delivery.
 
 Focused checks cover safe literal markup, whitespace and 10,000-character word
-wrapping, selection retention, minimum-size layout/long identities, password masking,
+wrapping, literal name tooltips, selection retention, minimum-size layout/long identities, password masking,
 keyboard tab order, label buddies, and text contrast. The selected body/secondary/
 muted text colours meet a measured 4.5:1 contrast against the tested panel/message
 backgrounds. This is a colour-palette check, not a full accessibility certification.

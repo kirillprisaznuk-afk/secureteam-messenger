@@ -1,14 +1,14 @@
 """Focused presentation checks; the existing integration suite covers business behaviour."""
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QColor
+from PyQt5.QtGui import QColor, QTextDocument
 from PyQt5.QtWidgets import QLabel, QLineEdit
 
 from client.gui.admin.users_tab import UserEditDialog
 from client.gui.conversation_view import MessageHistory
 from client.gui.login_window import LoginWindow
 from client.gui.main_window import MainWindow
-from client.gui.styles import PALETTE, apply_application_theme, display_time
+from client.gui.styles import PALETTE, apply_application_theme, display_time, literal_tooltip
 from tests.test_gui import wait_idle
 
 
@@ -117,3 +117,12 @@ def test_text_palette_contrast():
 def test_legacy_and_aware_timestamps_display_the_same_in_local_time():
     assert display_time("2026-10-27T14:00:00") == display_time("2026-10-27T14:00:00+00:00")
     assert display_time("not a timestamp") == "not a timestamp"
+
+
+def test_names_with_markup_remain_literal_in_tooltips(qapp):
+    name = 'Review <b>notes</b> & <img src="file:///private.png">'
+    tooltip = literal_tooltip(name)
+    assert "<img" not in tooltip
+    document = QTextDocument()
+    document.setHtml(tooltip)
+    assert document.toPlainText() == name

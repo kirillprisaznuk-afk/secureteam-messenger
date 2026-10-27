@@ -1,6 +1,7 @@
 """Shared desktop palette, typography, control states, and small layout helpers."""
 
 from datetime import UTC, datetime
+from html import escape
 from pathlib import Path
 
 from PyQt5.QtCore import Qt
@@ -144,6 +145,13 @@ def display_time(value: str, *, date: bool = True) -> str:
         return value
 
 
+def literal_tooltip(text: str) -> str:
+    """Qt auto-detects rich text in tooltips; names must remain literal."""
+    if "<" in text or "&" in text:
+        return "<qt>" + escape(text).replace("\n", "<br>") + "</qt>"
+    return text
+
+
 class ElidedLabel(QLabel):
     """Long identities/titles never dictate the window's minimum width."""
 
@@ -157,7 +165,7 @@ class ElidedLabel(QLabel):
 
     def setText(self, text):
         self._full_text = text
-        self.setToolTip(text)
+        self.setToolTip(literal_tooltip(text))
         self.setAccessibleName(text)
         self._update_text()
 
@@ -193,7 +201,7 @@ def configure_table(table: QTableWidget, stretch: int, widths: dict[int, int]) -
 
 
 def style_table_item(item, *, muted=False, centered=False):
-    item.setToolTip(item.text())
+    item.setToolTip(literal_tooltip(item.text()))
     if muted:
         item.setForeground(QColor(PALETTE["secondary"]))
     if centered:

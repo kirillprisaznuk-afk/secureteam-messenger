@@ -21,7 +21,7 @@ from PyQt5.QtWidgets import (
 from client.controller import background
 from client.gui.admin.admin_window import AdminWindow
 from client.gui.conversation_view import ROW_PRESENTATION, ConversationDelegate, MessageHistory
-from client.gui.styles import DARK_THEME, ElidedLabel
+from client.gui.styles import DARK_THEME, ElidedLabel, literal_tooltip
 from shared.constants import MESSAGE_MAX_LENGTH
 
 
@@ -210,7 +210,9 @@ class MainWindow(QMainWindow):
                     "subtitle": "Archived · read only" if chat["archived"] else "Team conversation",
                 },
             )
-            item.setToolTip(chat["name"] + (" · archived" if chat["archived"] else ""))
+            item.setToolTip(
+                literal_tooltip(chat["name"] + (" · archived" if chat["archived"] else ""))
+            )
             self.chats_list.addItem(item)
             if chat["id"] == previous:
                 selected = item
