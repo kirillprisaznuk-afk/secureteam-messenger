@@ -3,6 +3,7 @@
 from PyQt5 import sip
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
+    QFrame,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -13,14 +14,14 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSplitter,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
 from client.controller import background
 from client.gui.admin.admin_window import AdminWindow
-from client.gui.styles import DARK_THEME
+from client.gui.conversation_view import ROW_PRESENTATION, ConversationDelegate, MessageHistory
+from client.gui.styles import DARK_THEME, ElidedLabel
 from shared.constants import MESSAGE_MAX_LENGTH
 
 
@@ -36,8 +37,8 @@ class MainWindow(QMainWindow):
         self._next_before = None
         self._archived = False
         self.setWindowTitle(f"SecureTeam Messenger · {user_info['username']}")
-        self.setMinimumSize(740, 480)
-        self.resize(1040, 680)
+        self.setMinimumSize(800, 540)
+        self.resize(1120, 740)
         self.setStyleSheet(DARK_THEME)
         self.init_ui()
         self.chat_refresh_timer = QTimer(self)
@@ -49,70 +50,126 @@ class MainWindow(QMainWindow):
     def init_ui(self):
         central = QWidget()
         layout = QVBoxLayout(central)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(14)
+        layout.setContentsMargins(20, 18, 20, 16)
+        layout.setSpacing(18)
         bar = QHBoxLayout()
-        self.status_label = QLabel(f"{self.user_info['username']} · {self.role.replace('_', ' ')}")
-        self.status_label.setTextFormat(Qt.PlainText)
-        bar.addWidget(self.status_label)
-        bar.addStretch()
+        heading = QVBoxLayout()
+        heading.setSpacing(4)
+        heading.addWidget(QLabel("SecureTeam Messenger", objectName="title"))
+        self.status_label = ElidedLabel(
+            f"{self.user_info['username']} · {self.role.replace('_', ' ')}"
+        )
+        self.status_label.setObjectName("subtitle")
+        heading.addWidget(self.status_label)
+        bar.addLayout(heading, 1)
         self.admin_btn = QPushButton("Administration")
+        self.admin_btn.setToolTip("Manage workspace users, conversations and audit records")
         self.admin_btn.clicked.connect(self.open_admin_console)
         self.admin_btn.setVisible(self.role in {"owner", "org_admin", "department_manager"})
         bar.addWidget(self.admin_btn)
-        self.reconnect_btn = QPushButton("Reconnect / sign in")
+        self.reconnect_btn = QPushButton("Reconnect / sign in", objectName="primary")
         self.reconnect_btn.clicked.connect(self.reconnect)
         self.reconnect_btn.hide()
         bar.addWidget(self.reconnect_btn)
         layout.addLayout(bar)
-        splitter = QSplitter()
-        sidebar = QWidget()
+        self.splitter = QSplitter()
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setHandleWidth(12)
+        sidebar = QFrame(objectName="panel")
         side_layout = QVBoxLayout(sidebar)
-        side_layout.addWidget(QLabel("CONVERSATIONS"))
+        side_layout.setContentsMargins(12, 18, 12, 12)
+        side_layout.setSpacing(12)
+        side_layout.addWidget(QLabel("CONVERSATIONS", objectName="eyebrow"))
         self.chats_list = QListWidget()
-        self.chats_list.setMinimumWidth(220)
+        self.chats_list.setMinimumWidth(195)
+        self.chats_list.setTextElideMode(Qt.ElideRight)
+        self.chats_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.chats_list.setItemDelegate(ConversationDelegate(self.chats_list))
+        self.chats_list.setAccessibleName("Conversations")
         self.chats_list.itemSelectionChanged.connect(self.on_chat_selected)
-        side_layout.addWidget(self.chats_list)
+        side_layout.addWidget(self.chats_list, 1)
+        self.sidebar_hint = QLabel("Choose a conversation to view its messages.", objectName="hint")
+        self.sidebar_hint.setWordWrap(True)
+        side_layout.addWidget(self.sidebar_hint)
         self.new_chat_btn = QPushButton("New conversation")
         self.new_chat_btn.setVisible(self.role != "guest")
         self.new_chat_btn.clicked.connect(self.create_chat_dialog)
         side_layout.addWidget(self.new_chat_btn)
-        splitter.addWidget(sidebar)
-        conversation = QWidget()
+        self.splitter.addWidget(sidebar)
+        conversation = QFrame(objectName="panel")
+        conversation.setMinimumWidth(380)
         messages = QVBoxLayout(conversation)
-        self.conversation_label = QLabel("Select a conversation")
-        self.conversation_label.setTextFormat(Qt.PlainText)
-        messages.addWidget(self.conversation_label)
+        messages.setContentsMargins(0, 0, 0, 0)
+        messages.setSpacing(0)
+        title_bar = QVBoxLayout()
+        title_bar.setContentsMargins(20, 16, 20, 14)
+        title_bar.setSpacing(5)
+        self.conversation_label = ElidedLabel("Select a conversation")
+        self.conversation_label.setObjectName("sectionTitle")
+        title_bar.addWidget(self.conversation_label)
+        self.conversation_hint = QLabel(
+            "Your conversation history will appear here.", objectName="hint"
+        )
+        self.conversation_hint.setWordWrap(True)
+        title_bar.addWidget(self.conversation_hint)
+        messages.addLayout(title_bar)
         self.older_btn = QPushButton("Load earlier messages")
         self.older_btn.clicked.connect(self.load_older)
         self.older_btn.hide()
         messages.addWidget(self.older_btn)
-        self.messages_view = QTextEdit()
-        self.messages_view.setReadOnly(True)
-        self.messages_view.setAcceptRichText(False)
-        self.messages_view.setPlaceholderText("Choose a conversation to read its messages.")
-        messages.addWidget(self.messages_view)
+        self.messages_view = MessageHistory()
+        self.messages_view.setPlaceholderText(
+            "Select a conversation\n\nChoose a name on the left to read and send messages."
+        )
+        messages.addWidget(self.messages_view, 1)
+        composer_panel = QFrame(objectName="composer")
+        composer_layout = QVBoxLayout(composer_panel)
+        composer_layout.setContentsMargins(16, 14, 16, 12)
+        composer_layout.setSpacing(8)
         composer = QHBoxLayout()
+        composer.setSpacing(10)
         self.message_edit = QLineEdit()
         self.message_edit.setMaxLength(MESSAGE_MAX_LENGTH)
-        self.message_edit.setPlaceholderText("Write a message · Enter to send")
+        self.message_edit.setAccessibleName("Message")
+        self.message_edit.setPlaceholderText("Write a message…")
         self.message_edit.returnPressed.connect(self.send_message)
         composer.addWidget(self.message_edit, 1)
-        self.send_btn = QPushButton("Send")
+        self.send_btn = QPushButton("Send", objectName="primary")
+        self.send_btn.setToolTip("Send message (Enter)")
         self.send_btn.clicked.connect(self.send_message)
         composer.addWidget(self.send_btn)
-        messages.addLayout(composer)
-        splitter.addWidget(conversation)
-        splitter.setStretchFactor(1, 3)
-        layout.addWidget(splitter, 1)
+        composer_layout.addLayout(composer)
+        self.composer_hint = QLabel(
+            "Enter to send · Select message text to copy", objectName="hint"
+        )
+        self.composer_hint.setWordWrap(True)
+        composer_layout.addWidget(self.composer_hint)
+        messages.addWidget(composer_panel)
+        self.splitter.addWidget(conversation)
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setSizes([260, 800])
+        layout.addWidget(self.splitter, 1)
         self.setCentralWidget(central)
+        self.setTabOrder(self.chats_list, self.messages_view)
+        self.setTabOrder(self.messages_view, self.message_edit)
+        self.setTabOrder(self.message_edit, self.send_btn)
         self._composer_state()
+        self.statusBar().setSizeGripEnabled(True)
         self.statusBar().showMessage("Connected · updates every 3 seconds")
 
     def _composer_state(self):
         enabled = self.current_chat_id is not None and self.network.connected and not self._archived
         self.message_edit.setEnabled(enabled)
         self.send_btn.setEnabled(enabled)
+        if not self.network.connected:
+            self.composer_hint.setText("Connection lost · sign in again to continue")
+        elif self._archived:
+            self.composer_hint.setText("Archived conversation · messages are read-only")
+        elif self.current_chat_id is None:
+            self.composer_hint.setText("Select a conversation before writing a message")
+        else:
+            self.composer_hint.setText("Enter to send · Select message text to copy")
 
     def _check(self, response, silent=False):
         if response.get("success"):
@@ -146,6 +203,14 @@ class MainWindow(QMainWindow):
         for chat in response["chats"]:
             item = QListWidgetItem(chat["name"] + (" · archived" if chat["archived"] else ""))
             item.setData(Qt.UserRole, chat)
+            item.setData(
+                ROW_PRESENTATION,
+                {
+                    "title": chat["name"],
+                    "subtitle": "Archived · read only" if chat["archived"] else "Team conversation",
+                },
+            )
+            item.setToolTip(chat["name"] + (" · archived" if chat["archived"] else ""))
             self.chats_list.addItem(item)
             if chat["id"] == previous:
                 selected = item
@@ -157,12 +222,21 @@ class MainWindow(QMainWindow):
             self.conversation_label.setText(
                 chat["name"] + (" · read-only archive" if chat["archived"] else "")
             )
+            self.conversation_hint.setText(
+                "Read-only archive" if chat["archived"] else "Messages are saved to your workspace"
+            )
         if selected is None and previous:
             self.on_chat_selected()
         if not response["chats"]:
             self.conversation_label.setText(
                 "No conversations yet · ask an administrator to add you"
             )
+        count = len(response["chats"])
+        self.sidebar_hint.setText(
+            f"{count} conversation{'s' if count != 1 else ''} in your workspace"
+            if count
+            else "No conversations yet. An administrator can add you to one."
+        )
         self._composer_state()
         transport = "TLS" if self.network.ssl_context else "unencrypted local TCP"
         self.statusBar().showMessage(f"Connected · {transport} · updates every 3 seconds")
@@ -185,6 +259,13 @@ class MainWindow(QMainWindow):
             self.load_chat_history(chat["id"])
         else:
             self.conversation_label.setText("Select a conversation")
+        self.conversation_hint.setText(
+            "Read-only archive"
+            if self._archived and item
+            else "Messages are saved to your workspace"
+            if item
+            else "Choose a conversation from the sidebar."
+        )
         self._composer_state()
 
     @background
@@ -235,12 +316,7 @@ class MainWindow(QMainWindow):
         bar = self.messages_view.verticalScrollBar()
         position = bar.value()
         at_bottom = position >= bar.maximum() - 5
-        # Plain text prevents HTML in usernames/messages being interpreted as markup.
-        self.messages_view.setPlainText(
-            "\n\n".join(
-                f"{m['sender']}  ·  {m['created_at']}\n{m['content']}" for m in self._history
-            )
-        )
+        self.messages_view.render_messages(self._history, self.user_info["username"])
         bar.setValue(bar.maximum() if at_bottom else position)
         self.older_btn.setVisible(self._next_before is not None)
         if not self._history:

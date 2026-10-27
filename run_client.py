@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import QApplication, QMessageBox
 from client.controller import worker_pool
 from client.gui.login_window import LoginWindow
 from client.gui.main_window import MainWindow
+from client.gui.styles import apply_application_theme, configure_high_dpi
 from client.network import NetworkClient
 from shared.constants import DEFAULT_HOST, DEFAULT_PORT
 from shared.tls import client_context
@@ -33,7 +34,9 @@ def main() -> int:
         context = client_context(args.ca) if args.ca else None
     except OSError as exc:
         parser.error(f"Cannot load TLS trust: {exc}")
+    configure_high_dpi()
     app = QApplication(sys.argv[:1])
+    apply_application_theme(app)
     app.setApplicationName("SecureTeam Messenger")
     instance_key = hashlib.sha256(f"{args.host}:{args.port}".encode()).hexdigest()[:12]
     instance_lock = QLockFile(

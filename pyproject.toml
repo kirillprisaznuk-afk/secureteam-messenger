@@ -18,6 +18,9 @@ py-modules = ["run_client", "run_server"]
 [tool.setuptools.packages.find]
 include = ["client*", "server*", "shared*"]
 
+[tool.setuptools.package-data]
+"client.gui" = ["assets/*.svg"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 qt_api = "pyqt5"

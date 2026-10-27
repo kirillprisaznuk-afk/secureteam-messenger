@@ -1,10 +1,12 @@
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import QTimer
+from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
@@ -15,6 +17,7 @@ from PyQt5.QtWidgets import (
 )
 
 from client.controller import background
+from client.gui.styles import DARK_THEME, PALETTE, configure_table, style_table_item
 from client.network import NetworkClient
 
 
@@ -32,30 +35,56 @@ class UserEditDialog(QDialog):
         self.roles = roles
 
         self.setWindowTitle("Create user" if mode == "create" else "Change role")
-        self.resize(320, 160)
+        self.setStyleSheet(DARK_THEME)
+        self.setMinimumWidth(430)
+        self.resize(470, 350 if mode == "create" else 280)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 22, 24, 22)
+        layout.setSpacing(16)
+        layout.addWidget(
+            QLabel(
+                "Create workspace account" if mode == "create" else "Update account role",
+                objectName="sectionTitle",
+            )
+        )
+        hint = QLabel(
+            "Account access is managed by your workspace administrator.", objectName="hint"
+        )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
 
         form = QFormLayout()
+        form.setSpacing(12)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         self.username_edit = QLineEdit(self)
+        self.username_edit.setAccessibleName("Username")
+        self.username_edit.setPlaceholderText("Username")
         self.password_edit = QLineEdit(self)
         self.password_edit.setEchoMode(QLineEdit.Password)
+        self.password_edit.setAccessibleName("New account password")
+        self.password_edit.setPlaceholderText("12–128 characters")
         self.role_combo = QComboBox(self)
         self.role_combo.addItems(self.roles)
+        self.role_combo.setAccessibleName("Account role")
 
         if mode == "create":
-            form.addRow("Username:", self.username_edit)
-            form.addRow("Password:", self.password_edit)
+            form.addRow("&Username", self.username_edit)
+            form.addRow("&Password", self.password_edit)
         else:
             self.username_edit.setText(username)
             self.username_edit.setReadOnly(True)
-            form.addRow("Username:", self.username_edit)
+            form.addRow("&Username", self.username_edit)
 
-        form.addRow("Role:", self.role_combo)
+        form.addRow("&Role", self.role_combo)
 
         layout.addLayout(form)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=self)
+        buttons.button(QDialogButtonBox.Ok).setText(
+            "Create account" if mode == "create" else "Save role"
+        )
+        buttons.button(QDialogButtonBox.Ok).setObjectName("primary")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -87,14 +116,20 @@ class UsersTab(QWidget):
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 22, 18, 18)
+        layout.setSpacing(14)
+        layout.addWidget(QLabel("Workspace users", objectName="sectionTitle"))
+        description = QLabel("Manage account roles, access and availability.", objectName="hint")
+        description.setWordWrap(True)
+        layout.addWidget(description)
 
         buttons_layout = QHBoxLayout()
 
-        self.btn_create = QPushButton("Create")
-        self.btn_change_role = QPushButton("Change Role")
+        self.btn_create = QPushButton("Create user", objectName="primary")
+        self.btn_change_role = QPushButton("Change role")
         self.btn_block = QPushButton("Block")
         self.btn_unblock = QPushButton("Unblock")
-        self.btn_delete = QPushButton("Delete")
+        self.btn_delete = QPushButton("Delete", objectName="danger")
 
         buttons_layout.addWidget(self.btn_create)
         buttons_layout.addWidget(self.btn_change_role)
@@ -111,7 +146,8 @@ class UsersTab(QWidget):
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QTableWidget.SingleSelection)
-        self.table.horizontalHeader().setStretchLastSection(True)
+        configure_table(self.table, stretch=1, widths={0: 64, 2: 205, 3: 90, 4: 110})
+        self.table.setAccessibleName("Workspace user accounts")
 
         layout.addWidget(self.table)
 
@@ -150,10 +186,16 @@ class UsersTab(QWidget):
 
             online_item = QTableWidgetItem(online)
             if user.get("is_online"):
-                online_item.setForeground(Qt.green)
+                online_item.setForeground(QColor(PALETTE["success"]))
             else:
-                online_item.setForeground(Qt.gray)
+                online_item.setForeground(QColor(PALETTE["secondary"]))
             self.table.setItem(row, 4, online_item)
+            for column in range(5):
+                style_table_item(
+                    self.table.item(row, column),
+                    muted=column in {0, 2, 3},
+                    centered=column in {0, 3},
+                )
 
     def _get_selected_user_id(self) -> int | None:
         row = self.table.currentRow()

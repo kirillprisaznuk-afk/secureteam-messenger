@@ -15,6 +15,7 @@ not a service for sensitive real-world communications.
 ## Features
 
 - Desktop sign-in, conversation list, message composer, and paged history.
+- Clear incoming/outgoing message rows, local timestamps, keyboard focus, and resizable panels.
 - Multiple clients exchanging persistent messages through a threaded TCP server.
 - Argon2id password hashing, connection-bound sessions, and live account checks.
 - Five roles with server-enforced conversation membership and administrative scope.
@@ -32,10 +33,14 @@ These were captured offscreen; they are application renders, not design mockups.
 ![Conversation with synthetic users](docs/screenshots/conversation.png)
 
 <details>
-<summary>Sign-in and administration</summary>
+<summary>Sign-in, administration, and dialogs</summary>
 
 ![Sign-in](docs/screenshots/login.png)
-![Administration](docs/screenshots/administration.png)
+![User administration](docs/screenshots/administration.png)
+![Conversation administration](docs/screenshots/chat-administration.png)
+![Audit log](docs/screenshots/audit.png)
+![Create account dialog](docs/screenshots/user-dialog.png)
+![Conversation membership dialog](docs/screenshots/members-dialog.png)
 
 </details>
 
@@ -200,7 +205,8 @@ python -m scripts.capture_screenshots
 GUI tests default to Qt's offscreen platform. All tests and helper demos use
 temporary databases and OS-assigned local ports. They never use your account
 database. A firewall/sandbox must allow localhost sockets. The screenshot helper
-recreates the three documented images from actual running widgets.
+recreates the seven documented images from actual running widgets. Add
+`--output-dir PATH --check-layouts` to capture minimum-size visual checks separately.
 
 GitHub Actions runs lint, format, and tests on Windows/Linux with Python 3.11,
 3.12, and 3.13, plus a runtime dependency audit. See
@@ -240,10 +246,12 @@ small datasets. Managers have ownership scope, not a model of organisational
 departments. Deleting accounts referenced by history, owned conversations, or
 audit records is prevented; block them instead. The server supports IPv4.
 
-The Windows/Linux × Python 3.11–3.13 matrix passed in the
-[verified Actions run](https://github.com/kirillprisaznuk-afk/secureteam-messenger/actions/runs/40496039481); local validation was on
+The Windows/Linux × Python 3.11–3.13 matrix is checked by
+[GitHub Actions](https://github.com/kirillprisaznuk-afk/secureteam-messenger/actions/workflows/ci.yml); local validation was on
 Windows/Python 3.12. Offscreen GUI tests do not replace hands-on desktop testing
-of DPI scaling, platform window decorations, or assistive technologies.
+of per-monitor DPI changes, platform window decorations, or assistive technologies.
+The UI polish was checked offscreen at 100%, 150%, and 200% scale; see
+[UI polish and visual verification](docs/UI_POLISH.md).
 Upstream Qt native-library advisories require separate review; a clean Python
 package audit is not a comprehensive assessment of bundled native libraries.
 

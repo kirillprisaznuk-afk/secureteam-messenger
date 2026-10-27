@@ -3,8 +3,8 @@ from PyQt5.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
-    QHeaderView,
     QInputDialog,
+    QLabel,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
@@ -16,6 +16,8 @@ from PyQt5.QtWidgets import (
 )
 
 from client.controller import background
+from client.gui.conversation_view import ROW_PRESENTATION, ConversationDelegate
+from client.gui.styles import DARK_THEME, configure_table, style_table_item
 from client.network import NetworkClient
 
 
@@ -27,18 +29,31 @@ class MembersDialog(QDialog):
         self.selected_members: set[int] = set(current_members)
 
         self.setWindowTitle("Chat members")
-        self.resize(400, 400)
+        self.setStyleSheet(DARK_THEME)
+        self.setMinimumSize(440, 360)
+        self.resize(540, 480)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 22, 22, 20)
+        layout.setSpacing(14)
+        layout.addWidget(QLabel("Conversation members", objectName="sectionTitle"))
+        hint = QLabel(
+            "Select the users who should have access to this conversation.", objectName="hint"
+        )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
 
         self.table = QTableWidget(self)
         self.table.setColumnCount(3)
         self.table.setHorizontalHeaderLabels(["ID", "Username", "Member"])
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        configure_table(self.table, stretch=1, widths={0: 64, 2: 100})
+        self.table.setAccessibleName("Choose conversation members")
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         layout.addWidget(self.table)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=self)
+        buttons.button(QDialogButtonBox.Ok).setText("Apply selection")
+        buttons.button(QDialogButtonBox.Ok).setObjectName("primary")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -65,6 +80,9 @@ class MembersDialog(QDialog):
             member_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
             member_item.setCheckState(Qt.Checked if uid in self.current_members else Qt.Unchecked)
 
+            style_table_item(id_item, muted=True, centered=True)
+            style_table_item(username_item)
+            member_item.setToolTip(f"Include {username} in this conversation")
             self.table.setItem(row, 0, id_item)
             self.table.setItem(row, 1, username_item)
             self.table.setItem(row, 2, member_item)
@@ -106,29 +124,39 @@ class ChatsTab(QWidget):
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 22, 18, 18)
+        layout.setSpacing(14)
+        layout.addWidget(QLabel("Workspace conversations", objectName="sectionTitle"))
+        hint = QLabel("Manage names, membership and read-only archives.", objectName="hint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
 
         btn_layout = QHBoxLayout()
 
         self.btn_refresh = QPushButton("Refresh")
-        self.btn_create = QPushButton("Create chat")
+        self.btn_create = QPushButton("Create conversation", objectName="primary")
         self.btn_rename = QPushButton("Rename")
         self.btn_members = QPushButton("Edit members")
         self.btn_archive = QPushButton("Archive")
         self.btn_unarchive = QPushButton("Unarchive")
-        self.btn_delete = QPushButton("Delete")
+        self.btn_delete = QPushButton("Delete", objectName="danger")
 
-        btn_layout.addWidget(self.btn_refresh)
         btn_layout.addWidget(self.btn_create)
-        btn_layout.addWidget(self.btn_rename)
-        btn_layout.addWidget(self.btn_members)
-        btn_layout.addWidget(self.btn_archive)
-        btn_layout.addWidget(self.btn_unarchive)
-        btn_layout.addWidget(self.btn_delete)
+        btn_layout.addWidget(self.btn_refresh)
         btn_layout.addStretch()
-
         layout.addLayout(btn_layout)
+        actions = QHBoxLayout()
+        actions.addWidget(self.btn_rename)
+        actions.addWidget(self.btn_members)
+        actions.addWidget(self.btn_archive)
+        actions.addWidget(self.btn_unarchive)
+        actions.addStretch()
+        actions.addWidget(self.btn_delete)
+        layout.addLayout(actions)
 
         self.chats_list = QListWidget(self)
+        self.chats_list.setItemDelegate(ConversationDelegate(self.chats_list))
+        self.chats_list.setAccessibleName("Administer workspace conversations")
         self.chats_list.itemSelectionChanged.connect(self.on_chat_selected)
         layout.addWidget(self.chats_list)
 
@@ -187,6 +215,11 @@ class ChatsTab(QWidget):
 
             item = QListWidgetItem(text)
             item.setData(Qt.UserRole, chat_id)
+            detail = f"{members_count} members · Owner: {owner}" + (
+                " · Archived" if archived else " · Active"
+            )
+            item.setData(ROW_PRESENTATION, {"title": name, "subtitle": detail})
+            item.setToolTip(f"{name}\n{detail}")
             self.chats_list.addItem(item)
 
             if prev_chat_id is not None and chat_id == prev_chat_id:

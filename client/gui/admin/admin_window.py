@@ -1,4 +1,4 @@
-from PyQt5.QtWidgets import QMainWindow, QTabWidget, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QLabel, QMainWindow, QTabWidget, QVBoxLayout, QWidget
 
 from client.gui.admin.audit_tab import AuditTab
 from client.gui.admin.chats_tab import ChatsTab
@@ -15,10 +15,17 @@ class AdminWindow(QMainWindow):
 
     def init_ui(self):
         self.setWindowTitle("Administration · SecureTeam Messenger")
-        self.resize(900, 600)
+        self.setMinimumSize(900, 580)
+        self.resize(1140, 740)
 
         central = QWidget()
         layout = QVBoxLayout(central)
+        layout.setContentsMargins(22, 20, 22, 16)
+        layout.setSpacing(12)
+        layout.addWidget(QLabel("Workspace administration", objectName="title"))
+        hint = QLabel("People, conversations and administrative activity", objectName="subtitle")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
 
         self.tab_widget = QTabWidget()
         layout.addWidget(self.tab_widget)
