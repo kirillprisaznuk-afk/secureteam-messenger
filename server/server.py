@@ -1,444 +1,191 @@
+"""Bounded thread-per-connection TCP transport with connection-bound sessions."""
+
+import ipaddress
+import logging
 import socket
+import ssl
 import threading
-import sys
-import hashlib
+import time
+from collections import deque
 
-from shared.protocol import Protocol, MessageType
+from server import config
 from server.database import Database
-import server.config as config
+from server.router import RequestRouter, error
+from shared.constants import IDLE_TIMEOUT, REQUEST_TIMEOUT, SESSION_TIMEOUT
+from shared.protocol import MessageType, Protocol, ProtocolError
 
-
-def hash_password(raw: str) -> str:
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+log = logging.getLogger(__name__)
 
 
 class MessengerServer:
-    def __init__(self, host: str = config.HOST, port: int = config.PORT):
-        self.host = host
-        self.port = port
+    def __init__(
+        self,
+        host: str = config.HOST,
+        port: int = config.PORT,
+        database_path: str = config.DATABASE_PATH,
+        ssl_context: ssl.SSLContext | None = None,
+        max_connections: int = config.MAX_CONNECTIONS,
+        idle_timeout: float = IDLE_TIMEOUT,
+        session_timeout: float = SESSION_TIMEOUT,
+    ):
+        bind_address = ipaddress.ip_address(host)
+        if bind_address.version != 4:
+            raise ValueError("This server currently supports IPv4 listeners only")
+        if ssl_context is None and not bind_address.is_loopback:
+            raise ValueError("Non-loopback listeners require TLS (--cert and --key)")
+        self.host, self.port = host, port
+        self.ssl_context = ssl_context
+        self.max_connections = max_connections
+        self.idle_timeout, self.session_timeout = idle_timeout, session_timeout
+        self.db = Database(database_path)
         self.server_socket: socket.socket | None = None
         self.running = False
-
-        print("=" * 60)
-        print("CORPORATE MESSENGER SERVER")
-        print("=" * 60)
-        print("[SERVER] Initializing database...")
-
-        self.db = Database(config.DATABASE_PATH)
-
-        self._ensure_default_admin()
-
+        self.ready = threading.Event()
+        self.lock = threading.RLock()
         self.clients: dict[socket.socket, int] = {}
-
-        print("[SERVER] Server initialized!")
-        print("=" * 60)
-
-
-    def _ensure_default_admin(self):
-
-        with self.db.lock, self.db._connect() as conn:
-            c = conn.cursor()
-            c.execute("SELECT COUNT(*) FROM users")
-            cnt = c.fetchone()[0]
-            if cnt == 0:
-                print("[SERVER] Creating default admin user: admin/admin123")
-                self.db.create_user("admin", hash_password("admin123"), "owner")
+        self.connections: set[socket.socket] = set()
+        self.threads: set[threading.Thread] = set()
+        self.router = RequestRouter(self.db, self._get_online_user_ids)
 
     def _get_online_user_ids(self) -> set[int]:
+        with self.lock:
+            return set(self.clients.values())
 
-        return set(self.clients.values())
-
-
-    def start(self):
+    def start(self) -> None:
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket = listener
         try:
-            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.server_socket.bind((self.host, self.port))
-            self.server_socket.listen(config.MAX_CONNECTIONS)
-
+            # Windows SO_REUSEADDR permits duplicate listeners; exclusive bind avoids that.
+            if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            else:
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind((self.host, self.port))
+            self.port = listener.getsockname()[1]
+            listener.listen(self.max_connections)
+            listener.settimeout(0.2)
             self.running = True
-
-            print(f"[SERVER] Server started on {self.host}:{self.port}")
-            print("[SERVER] Waiting for connections...")
-            print("=" * 60)
-
+            self.ready.set()
+            log.info(
+                "Listening on %s:%d (%s)",
+                self.host,
+                self.port,
+                "TLS" if self.ssl_context else "local plaintext TCP",
+            )
             while self.running:
                 try:
-                    client_socket, address = self.server_socket.accept()
-                    print(f"[SERVER] New connection from {address}")
-
-                    client_thread = threading.Thread(
-                        target=self.handle_client,
-                        args=(client_socket, address),
-                        daemon=True,
-                    )
-                    client_thread.start()
-                except Exception as e:
+                    conn, address = listener.accept()
+                except TimeoutError:
+                    continue
+                except OSError:
                     if self.running:
-                        print(f"[SERVER] Accept error: {e}")
-        except Exception as e:
-            print(f"[SERVER] Failed to start: {e}")
-            sys.exit(1)
-
-    def stop(self):
-        print("\n[SERVER] Shutting down...")
-        self.running = False
-
-        for client_socket in list(self.clients.keys()):
-            try:
-                client_socket.close()
-            except Exception:
-                pass
-
-        if self.server_socket:
-            try:
-                self.server_socket.close()
-            except Exception:
-                pass
-
-        print("[SERVER] Server stopped")
-
-
-    def handle_client(self, client_socket: socket.socket, address):
-        ip_address = address[0]
-        user_id: int | None = None
-
-        try:
-            while self.running:
-                data = Protocol.read_message(client_socket)
-                if not data:
+                        raise
                     break
-
-                msg_type, msg_data = Protocol.parse_message(data)
-                response = self.process_message(msg_type, msg_data, user_id, ip_address)
-
-                if msg_type == MessageType.LOGIN and response.get("success"):
-                    user_id = response.get("user_id")
-                    self.clients[client_socket] = user_id
-
-                response_data = Protocol.create_message(MessageType.ACK, response)
-                client_socket.sendall(response_data)
-
-        except Exception as e:
-            print(f"[SERVER] Error handling client {address}: {e}")
+                with self.lock:
+                    if not self.running or len(self.connections) >= self.max_connections:
+                        conn.close()
+                        continue
+                    self.connections.add(conn)
+                    worker = threading.Thread(
+                        target=self.handle_client, args=(conn, address), name="messenger-connection"
+                    )
+                    self.threads.add(worker)
+                    worker.start()
         finally:
-            if client_socket in self.clients:
-                del self.clients[client_socket]
+            self.stop()
+            self.ready.set()
+
+    @staticmethod
+    def _close(conn: socket.socket) -> None:
+        try:
+            conn.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass  # Already closed or disconnected.
+        conn.close()
+
+    def stop(self) -> None:
+        self.running = False
+        if self.server_socket:
+            self.server_socket.close()
+        with self.lock:
+            connections = list(self.connections)
+            workers = list(self.threads)
+        for conn in connections:
+            self._close(conn)
+        for worker in workers:
+            if worker is not threading.current_thread():
+                worker.join(timeout=12)
+        log.info("Server stopped")
+
+    def handle_client(self, conn: socket.socket, address) -> None:
+        user_id = None
+        expires_at = 0.0
+        requests = deque()
+        try:
+            conn.settimeout(5)
+            if self.ssl_context:
+                raw = conn
+                conn = self.ssl_context.wrap_socket(
+                    conn, server_side=True, do_handshake_on_connect=False
+                )
+                with self.lock:
+                    self.connections.discard(raw)
+                    self.connections.add(conn)
+                conn.do_handshake()
+            conn.settimeout(self.idle_timeout)
+            while self.running:
+                raw = Protocol.read_message(conn)
+                if raw is None:
+                    break
+                now = time.monotonic()
+                while requests and now - requests[0] >= 1:
+                    requests.popleft()
+                if len(requests) >= config.MAX_REQUESTS_PER_SECOND:
+                    self._reply(conn, error("RATE_LIMITED", "Too many requests"))
+                    break
+                requests.append(now)
+                kind, data = Protocol.parse_message(raw)
+                if user_id is not None and now >= expires_at:
+                    self._reply(conn, error("SESSION_EXPIRED", "Session expired; sign in again"))
+                    break
+                response = self.router.process(kind, data, user_id, address[0])
+                if kind == MessageType.LOGIN and response.get("success"):
+                    user_id = response["user_id"]
+                    expires_at = time.monotonic() + self.session_timeout
+                    with self.lock:
+                        self.clients[conn] = user_id
+                if kind == MessageType.LOGOUT or response.get("code") == "NOT_AUTHENTICATED":
+                    user_id = None
+                    with self.lock:
+                        self.clients.pop(conn, None)
+                self._reply(conn, response)
+        except ProtocolError:
             try:
-                client_socket.close()
-            except Exception:
+                self._reply(conn, error("INVALID_FRAME", "Malformed protocol message"))
+            except OSError:
                 pass
-            print(f"[SERVER] Client {address} disconnected")
+        except (OSError, TimeoutError):
+            log.debug("Connection closed or timed out")
+        except Exception:
+            log.exception("Connection worker failed")
+        finally:
+            with self.lock:
+                self.clients.pop(conn, None)
+                self.connections.discard(conn)
+                self.threads.discard(threading.current_thread())
+            self._close(conn)
 
-
-    def process_message(
-        self,
-        msg_type: MessageType,
-        msg_data: dict,
-        user_id: int | None,
-        ip_address: str,
-    ) -> dict:
-
-        if msg_type == MessageType.LOGIN:
-            username = msg_data.get("username")
-            password = msg_data.get("password")
-
-            row = self.db.verify_user(username, hash_password(password))
-            if not row:
-                return {"success": False, "error": "Invalid credentials"}
-
-            return {
-                "success": True,
-                "user_id": row["id"],
-                "username": row["username"],
-                "role": row["role"],
-            }
-
-        if not user_id:
-            return {"success": False, "error": "Not authenticated"}
-
-        user = self.db.get_user_by_id(user_id)
-        role = user["role"] if user else "guest"
-        actor_username = user["username"] if user else "unknown"
-
-        is_super_admin = role in ("owner", "org_admin")
-        is_dept_manager = role == "department_manager"
-
-        if msg_type == MessageType.GET_CHAT_LIST:
-            chats = self.db.get_chat_list_for_user(user_id)
-            return {"success": True, "chats": chats}
-
-        elif msg_type == MessageType.GET_CHAT_HISTORY:
-            chat_id = msg_data.get("chat_id")
-            if not chat_id:
-                return {"success": False, "error": "Bad request"}
-            messages = self.db.get_chat_messages(chat_id)
-            return {"success": True, "messages": messages}
-
-        elif msg_type == MessageType.CREATE_CHAT:
-            name = msg_data.get("name")
-            if not name:
-                return {"success": False, "error": "Bad request"}
-            chat_id = self.db.create_chat(name, user_id)
-            return {"success": True, "chat_id": chat_id}
-
-        elif msg_type == MessageType.TEXT_MESSAGE:
-            chat_id = msg_data.get("chat_id")
-            content = msg_data.get("content", "").strip()
-            if not chat_id or not content:
-                return {"success": False, "error": "Bad request"}
-            msg_id = self.db.add_message(chat_id, user_id, content)
-            return {"success": True, "message_id": msg_id}
-
-        if msg_type == MessageType.GET_ALL_USERS:
-            if not (is_super_admin or is_dept_manager):
-                return {"success": False, "error": "Permission denied"}
-            users = self.db.get_all_users()
-            online_ids = self._get_online_user_ids()
-            for u in users:
-                u["is_online"] = u["id"] in online_ids
-            return {"success": True, "users": users}
-
-        elif msg_type == MessageType.CREATE_USER:
-            if not is_super_admin:
-                return {"success": False, "error": "Permission denied"}
-
-            username = msg_data.get("username")
-            password = msg_data.get("password")
-            new_role = msg_data.get("role", "employee")
-
-            if not username or not password:
-                return {"success": False, "error": "Bad request"}
-
-            try:
-                new_id = self.db.create_user(
-                    username, hash_password(password), new_role
-                )
-                self.db.add_audit_entry(
-                    actor_id=user_id,
-                    actor_username=actor_username,
-                    action="user.create",
-                    target_type="user",
-                    target_id=new_id,
-                    details=f"username={username}, role={new_role}",
-                )
-                return {"success": True, "user_id": new_id}
-            except Exception as e:
-                return {"success": False, "error": str(e)}
-
-        elif msg_type == MessageType.UPDATE_USER:
-            if not is_super_admin:
-                return {"success": False, "error": "Permission denied"}
-
-            target_id = msg_data.get("user_id")
-            new_role = msg_data.get("role")
-            if not target_id or not new_role:
-                return {"success": False, "error": "Bad request"}
-
-            self.db.update_user_role(target_id, new_role)
-            self.db.add_audit_entry(
-                actor_id=user_id,
-                actor_username=actor_username,
-                action="user.change_role",
-                target_type="user",
-                target_id=target_id,
-                details=f"new_role={new_role}",
+    @staticmethod
+    def _reply(conn: socket.socket, response: dict) -> None:
+        try:
+            encoded = Protocol.create_message(MessageType.ACK, response)
+        except ProtocolError:
+            encoded = Protocol.create_message(
+                MessageType.ACK, error("RESPONSE_TOO_LARGE", "Response exceeds protocol limit")
             )
-            return {"success": True}
-
-        elif msg_type == MessageType.BLOCK_USER:
-            if not is_super_admin:
-                return {"success": False, "error": "Permission denied"}
-
-            target_id = msg_data.get("user_id")
-            if not target_id:
-                return {"success": False, "error": "Bad request"}
-
-            self.db.block_user(target_id)
-            self.db.add_audit_entry(
-                actor_id=user_id,
-                actor_username=actor_username,
-                action="user.block",
-                target_type="user",
-                target_id=target_id,
-                details="",
-            )
-            return {"success": True}
-
-        elif msg_type == MessageType.UNBLOCK_USER:
-            if not is_super_admin:
-                return {"success": False, "error": "Permission denied"}
-
-            target_id = msg_data.get("user_id")
-            if not target_id:
-                return {"success": False, "error": "Bad request"}
-
-            self.db.unblock_user(target_id)
-            self.db.add_audit_entry(
-                actor_id=user_id,
-                actor_username=actor_username,
-                action="user.unblock",
-                target_type="user",
-                target_id=target_id,
-                details="",
-            )
-            return {"success": True}
-
-        elif msg_type == MessageType.DELETE_USER:
-            if not is_super_admin:
-                return {"success": False, "error": "Permission denied"}
-
-            target_id = msg_data.get("user_id")
-            if not target_id:
-                return {"success": False, "error": "Bad request"}
-
-            self.db.delete_user(target_id)
-            self.db.add_audit_entry(
-                actor_id=user_id,
-                actor_username=actor_username,
-                action="user.delete",
-                target_type="user",
-                target_id=target_id,
-                details="",
-            )
-            return {"success": True}
-
-        if msg_type == MessageType.ADMIN_GET_ALL_CHATS:
-            if not (is_super_admin or is_dept_manager):
-                return {"success": False, "error": "Permission denied"}
-            chats = self.db.admin_get_all_chats()
-            return {"success": True, "chats": chats}
-
-        elif msg_type == MessageType.ADMIN_GET_CHAT_INFO:
-            if not (is_super_admin or is_dept_manager):
-                return {"success": False, "error": "Permission denied"}
-
-            chat_id = msg_data.get("chat_id")
-            if not chat_id:
-                return {"success": False, "error": "Bad request"}
-
-            chat = self.db.admin_get_chat_info(chat_id)
-            if not chat:
-                return {"success": False, "error": "Chat not found"}
-
-            return {"success": True, "chat": chat}
-
-        elif msg_type == MessageType.ADMIN_CREATE_CHAT:
-            if not (is_super_admin or is_dept_manager):
-                return {"success": False, "error": "Permission denied"}
-
-            name = msg_data.get("name")
-            members = msg_data.get("members", [])
-            if not name:
-                return {"success": False, "error": "Bad request"}
-
-            chat_id = self.db.admin_create_chat(name, user_id, members)
-            self.db.add_audit_entry(
-                actor_id=user_id,
-                actor_username=actor_username,
-                action="chat.create",
-                target_type="chat",
-                target_id=chat_id,
-                details=f"name={name}, members={members}",
-            )
-            return {"success": True, "chat_id": chat_id}
-
-        elif msg_type == MessageType.ADMIN_UPDATE_CHAT:
-            if not (is_super_admin or is_dept_manager):
-                return {"success": False, "error": "Permission denied"}
-
-            chat_id = msg_data.get("chat_id")
-            name = msg_data.get("name")
-            members = msg_data.get("members", [])
-            if not chat_id or not name:
-                return {"success": False, "error": "Bad request"}
-
-            self.db.admin_update_chat(chat_id, name, members)
-            self.db.add_audit_entry(
-                actor_id=user_id,
-                actor_username=actor_username,
-                action="chat.update",
-                target_type="chat",
-                target_id=chat_id,
-                details=f"name={name}, members={members}",
-            )
-            return {"success": True}
-
-        elif msg_type == MessageType.ADMIN_ARCHIVE_CHAT:
-            if not (is_super_admin or is_dept_manager):
-                return {"success": False, "error": "Permission denied"}
-
-            chat_id = msg_data.get("chat_id")
-            if not chat_id:
-                return {"success": False, "error": "Bad request"}
-
-            self.db.admin_set_chat_archived(chat_id, True)
-            self.db.add_audit_entry(
-                actor_id=user_id,
-                actor_username=actor_username,
-                action="chat.archive",
-                target_type="chat",
-                target_id=chat_id,
-                details="",
-            )
-            return {"success": True}
-
-        elif msg_type == MessageType.ADMIN_UNARCHIVE_CHAT:
-            if not (is_super_admin or is_dept_manager):
-                return {"success": False, "error": "Permission denied"}
-
-            chat_id = msg_data.get("chat_id")
-            if not chat_id:
-                return {"success": False, "error": "Bad request"}
-
-            self.db.admin_set_chat_archived(chat_id, False)
-            self.db.add_audit_entry(
-                actor_id=user_id,
-                actor_username=actor_username,
-                action="chat.unarchive",
-                target_type="chat",
-                target_id=chat_id,
-                details="",
-            )
-            return {"success": True}
-
-        elif msg_type == MessageType.ADMIN_DELETE_CHAT:
-            if not (is_super_admin or is_dept_manager):
-                return {"success": False, "error": "Permission denied"}
-
-            chat_id = msg_data.get("chat_id")
-            if not chat_id:
-                return {"success": False, "error": "Bad request"}
-
-            self.db.admin_delete_chat(chat_id)
-            self.db.add_audit_entry(
-                actor_id=user_id,
-                actor_username=actor_username,
-                action="chat.delete",
-                target_type="chat",
-                target_id=chat_id,
-                details="",
-            )
-            return {"success": True}
-
-        if msg_type == MessageType.PING:
-
-            if not msg_data.get("audit"):
-                return {"success": True, "message": "pong"}
-
-            if not (is_super_admin or is_dept_manager):
-                return {"success": False, "error": "Permission denied"}
-
-            limit = msg_data.get("limit", 200)
-            entries = self.db.get_audit_entries(limit=limit)
-            return {"success": True, "entries": entries}
-
-        return {"success": False, "error": "Unknown message type"}
-
-
-if __name__ == "__main__":
-    server = MessengerServer()
-    try:
-        server.start()
-    except KeyboardInterrupt:
-        server.stop()
+        original_timeout = conn.gettimeout()
+        try:
+            conn.settimeout(REQUEST_TIMEOUT)
+            conn.sendall(encoded)
+        finally:
+            conn.settimeout(original_timeout)

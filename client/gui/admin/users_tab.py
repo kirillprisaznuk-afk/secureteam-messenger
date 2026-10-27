@@ -1,25 +1,24 @@
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QPushButton,
-    QTableWidget,
-    QTableWidgetItem,
-    QMessageBox,
-    QInputDialog,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QHBoxLayout,
     QLineEdit,
-    QComboBox,
+    QMessageBox,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
 
+from client.controller import background
 from client.network import NetworkClient
 
 
 class UserEditDialog(QDialog):
-
     def __init__(
         self,
         mode: str,
@@ -56,9 +55,7 @@ class UserEditDialog(QDialog):
 
         layout.addLayout(form)
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=self
-        )
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=self)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -70,13 +67,12 @@ class UserEditDialog(QDialog):
     def get_values(self):
         return {
             "username": self.username_edit.text().strip(),
-            "password": self.password_edit.text().strip(),
+            "password": self.password_edit.text(),
             "role": self.role_combo.currentText(),
         }
 
 
 class UsersTab(QWidget):
-
     AVAILABLE_ROLES = ["owner", "org_admin", "department_manager", "employee", "guest"]
 
     def __init__(self, network: NetworkClient, parent=None):
@@ -88,7 +84,6 @@ class UsersTab(QWidget):
         self._init_ui()
         self._init_timer()
         self.load_users()
-
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -112,9 +107,7 @@ class UsersTab(QWidget):
 
         self.table = QTableWidget(self)
         self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(
-            ["ID", "Username", "Role", "Blocked", "Online"]
-        )
+        self.table.setHorizontalHeaderLabels(["ID", "Username", "Role", "Blocked", "Online"])
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QTableWidget.SingleSelection)
@@ -128,17 +121,15 @@ class UsersTab(QWidget):
         self.btn_unblock.clicked.connect(self.on_unblock_clicked)
         self.btn_delete.clicked.connect(self.on_delete_clicked)
 
-
-
     def _init_timer(self):
         self.refresh_timer = QTimer(self)
         self.refresh_timer.setInterval(3000)
         self.refresh_timer.timeout.connect(self.load_users)
         self.refresh_timer.start()
 
-
+    @background
     def load_users(self):
-        resp = self.network.get_all_users()
+        resp = yield lambda: self.network.get_all_users()
         if not resp.get("success"):
             return
 
@@ -186,9 +177,7 @@ class UsersTab(QWidget):
             return None, None
         return item_user.text(), item_role.text()
 
-
     def set_read_only(self, read_only: bool):
-
         self._read_only = read_only
         enabled = not read_only
         self.btn_create.setEnabled(enabled)
@@ -197,14 +186,14 @@ class UsersTab(QWidget):
         self.btn_unblock.setEnabled(enabled)
         self.btn_delete.setEnabled(enabled)
 
-
+    @background
     def on_create_clicked(self):
         if self._read_only:
             return
 
         dlg = UserEditDialog(
             mode="create",
-            roles=self.AVAILABLE_ROLES,
+            roles=self.allowed_roles(),
             parent=self,
         )
         if dlg.exec_() != QDialog.Accepted:
@@ -219,15 +208,14 @@ class UsersTab(QWidget):
             QMessageBox.warning(self, "Invalid data", "Username and password required.")
             return
 
-        resp = self.network.create_user(username, password, role)
+        resp = yield lambda: self.network.create_user(username, password, role)
         if not resp.get("success"):
-            QMessageBox.warning(
-                self, "Error", resp.get("error", "Failed to create user")
-            )
+            QMessageBox.warning(self, "Error", resp.get("error", "Failed to create user"))
             return
 
         self.load_users()
 
+    @background
     def on_change_role_clicked(self):
         if self._read_only:
             return
@@ -240,7 +228,7 @@ class UsersTab(QWidget):
 
         dlg = UserEditDialog(
             mode="edit",
-            roles=self.AVAILABLE_ROLES,
+            roles=self.allowed_roles(),
             username=username,
             role=current_role,
             parent=self,
@@ -253,15 +241,14 @@ class UsersTab(QWidget):
         if new_role == current_role:
             return
 
-        resp = self.network.update_user(uid, new_role)
+        resp = yield lambda: self.network.update_user(uid, new_role)
         if not resp.get("success"):
-            QMessageBox.warning(
-                self, "Error", resp.get("error", "Failed to update role")
-            )
+            QMessageBox.warning(self, "Error", resp.get("error", "Failed to update role"))
             return
 
         self.load_users()
 
+    @background
     def on_block_clicked(self):
         if self._read_only:
             return
@@ -270,11 +257,12 @@ class UsersTab(QWidget):
         if not uid:
             QMessageBox.warning(self, "No selection", "Select a user first.")
             return
-        resp = self.network.block_user(uid)
+        resp = yield lambda: self.network.block_user(uid)
         if not resp.get("success"):
             QMessageBox.warning(self, "Error", resp.get("error", "Unknown error"))
         self.load_users()
 
+    @background
     def on_unblock_clicked(self):
         if self._read_only:
             return
@@ -283,11 +271,12 @@ class UsersTab(QWidget):
         if not uid:
             QMessageBox.warning(self, "No selection", "Select a user first.")
             return
-        resp = self.network.unblock_user(uid)
+        resp = yield lambda: self.network.unblock_user(uid)
         if not resp.get("success"):
             QMessageBox.warning(self, "Error", resp.get("error", "Unknown error"))
         self.load_users()
 
+    @background
     def on_delete_clicked(self):
         if self._read_only:
             return
@@ -305,7 +294,13 @@ class UsersTab(QWidget):
         if confirm != QMessageBox.Yes:
             return
 
-        resp = self.network.delete_user(uid)
+        resp = yield lambda: self.network.delete_user(uid)
         if not resp.get("success"):
             QMessageBox.warning(self, "Error", resp.get("error", "Unknown error"))
         self.load_users()
+
+    def allowed_roles(self):
+        from shared.models import ROLE_RANK as RANK
+
+        actor_role = (self.network.user_info or {}).get("role", "guest")
+        return [role for role in self.AVAILABLE_ROLES if RANK[role] < RANK[actor_role]]

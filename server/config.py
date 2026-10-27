@@ -1,26 +1,15 @@
-import os
+"""Server defaults; command-line arguments override deployment settings."""
 
-HOST = '0.0.0.0'
-PORT = 5555
-MAX_CONNECTIONS = 50
+from pathlib import Path
 
-DATABASE_PATH = 'corporate_messenger.db'
-BACKUP_PATH = 'backups/'
+from shared.constants import DEFAULT_HOST, DEFAULT_PORT
 
-ENCRYPTION_KEY_SIZE = 32
-SALT_SIZE = 16
-
-MIN_PASSWORD_LENGTH = 8
-SESSION_TIMEOUT = 3600
-MAX_LOGIN_ATTEMPTS = 3
-BLOCK_TIME = 900
-
-MAX_FILE_SIZE = 100 * 1024 * 1024
-UPLOAD_DIRECTORY = 'uploads/'
-
-AUDIT_LOG_FILE = 'audit.log'
-ENABLE_AUDIT = True
-
-BACKUP_ENABLED = True
-BACKUP_INTERVAL = 86400
-BACKUP_RETENTION_DAYS = 30
+HOST = DEFAULT_HOST
+PORT = DEFAULT_PORT
+DATABASE_PATH = str(Path(__file__).resolve().parents[1] / "corporate_messenger.db")
+MAX_CONNECTIONS = 32
+MAX_LOGIN_ATTEMPTS = 5
+BLOCK_TIME = 300
+MAX_REQUESTS_PER_SECOND = 30
+MAX_AUTH_TRACKED_IPS = 4096
+AUTH_HASH_CONCURRENCY = 2

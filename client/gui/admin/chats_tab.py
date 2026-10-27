@@ -1,26 +1,25 @@
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
+    QDialog,
+    QDialogButtonBox,
     QHBoxLayout,
-    QPushButton,
+    QHeaderView,
+    QInputDialog,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
-    QInputDialog,
-    QDialog,
-    QDialogButtonBox,
+    QPushButton,
     QTableWidget,
     QTableWidgetItem,
-    QHeaderView,
+    QVBoxLayout,
+    QWidget,
 )
 
+from client.controller import background
 from client.network import NetworkClient
 
 
 class MembersDialog(QDialog):
-
-
     def __init__(self, network: NetworkClient, current_members: list[int], parent=None):
         super().__init__(parent)
         self.network = network
@@ -39,21 +38,18 @@ class MembersDialog(QDialog):
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         layout.addWidget(self.table)
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=self
-        )
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=self)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
         self.load_users()
 
+    @background
     def load_users(self):
-        resp = self.network.get_all_users()
+        resp = yield lambda: self.network.get_all_users()
         if not resp.get("success"):
-            QMessageBox.critical(
-                self, "Error", resp.get("error", "Failed to load users")
-            )
+            QMessageBox.critical(self, "Error", resp.get("error", "Failed to load users"))
             return
 
         users = resp.get("users", [])
@@ -66,12 +62,8 @@ class MembersDialog(QDialog):
             id_item = QTableWidgetItem(str(uid))
             username_item = QTableWidgetItem(username)
             member_item = QTableWidgetItem()
-            member_item.setFlags(
-                Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable
-            )
-            member_item.setCheckState(
-                Qt.Checked if uid in self.current_members else Qt.Unchecked
-            )
+            member_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            member_item.setCheckState(Qt.Checked if uid in self.current_members else Qt.Unchecked)
 
             self.table.setItem(row, 0, id_item)
             self.table.setItem(row, 1, username_item)
@@ -100,8 +92,6 @@ class MembersDialog(QDialog):
 
 
 class ChatsTab(QWidget):
-
-
     def __init__(self, network: NetworkClient, parent=None):
         super().__init__(parent)
         self.network = network
@@ -113,7 +103,6 @@ class ChatsTab(QWidget):
         self._init_timer()
 
         self.load_chats()
-
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -151,22 +140,22 @@ class ChatsTab(QWidget):
         self.btn_unarchive.clicked.connect(self.unarchive_chat)
         self.btn_delete.clicked.connect(self.delete_chat)
 
-
     def _init_timer(self):
         self.refresh_timer = QTimer(self)
-        self.refresh_timer.setInterval(5000) 
+        self.refresh_timer.setInterval(5000)
         self.refresh_timer.timeout.connect(self.load_chats_silent)
         self.refresh_timer.start()
 
-
+    @background
     def load_chats(self):
-        self._load_chats_internal(silent=False)
+        yield from self._load_chats_internal(silent=False)
 
+    @background
     def load_chats_silent(self):
-        self._load_chats_internal(silent=True)
+        yield from self._load_chats_internal(silent=True)
 
     def _load_chats_internal(self, silent: bool):
-        resp = self.network.admin_get_all_chats()
+        resp = yield lambda: self.network.admin_get_all_chats()
         if not resp.get("success"):
             if not silent:
                 QMessageBox.critical(
@@ -220,7 +209,7 @@ class ChatsTab(QWidget):
         self.current_chat_id = cid
 
     def _get_chat_info(self, chat_id: int) -> dict | None:
-        resp = self.network.admin_get_chat_info(chat_id)
+        resp = yield lambda: self.network.admin_get_chat_info(chat_id)
         if not resp.get("success"):
             QMessageBox.critical(
                 self,
@@ -230,7 +219,7 @@ class ChatsTab(QWidget):
             return None
         return resp.get("chat")
 
-
+    @background
     def create_chat(self):
         name, ok = QInputDialog.getText(self, "Create chat", "Chat name:")
         if not ok or not name.strip():
@@ -242,7 +231,7 @@ class ChatsTab(QWidget):
             return
         members = dlg.get_selected_members()
 
-        resp = self.network.admin_create_chat(name, members)
+        resp = yield lambda: self.network.admin_create_chat(name, members)
         if not resp.get("success"):
             QMessageBox.critical(
                 self,
@@ -253,27 +242,26 @@ class ChatsTab(QWidget):
 
         self.load_chats()
 
+    @background
     def rename_chat(self):
         chat_id = self._get_selected_chat_id()
         if not chat_id:
             QMessageBox.warning(self, "No selection", "Select a chat first.")
             return
 
-        info = self._get_chat_info(chat_id)
+        info = yield from self._get_chat_info(chat_id)
         if not info:
             return
 
         old_name = info["name"]
         members = info["members"]
 
-        new_name, ok = QInputDialog.getText(
-            self, "Rename chat", "New name:", text=old_name
-        )
+        new_name, ok = QInputDialog.getText(self, "Rename chat", "New name:", text=old_name)
         if not ok or not new_name.strip():
             return
         new_name = new_name.strip()
 
-        resp = self.network.admin_update_chat(chat_id, new_name, members)
+        resp = yield lambda: self.network.admin_update_chat(chat_id, new_name, members)
         if not resp.get("success"):
             QMessageBox.critical(
                 self,
@@ -284,13 +272,14 @@ class ChatsTab(QWidget):
 
         self.load_chats()
 
+    @background
     def edit_members(self):
         chat_id = self._get_selected_chat_id()
         if not chat_id:
             QMessageBox.warning(self, "No selection", "Select a chat first.")
             return
 
-        info = self._get_chat_info(chat_id)
+        info = yield from self._get_chat_info(chat_id)
         if not info:
             return
 
@@ -304,7 +293,7 @@ class ChatsTab(QWidget):
 
         new_members = dlg.get_selected_members()
 
-        resp = self.network.admin_update_chat(chat_id, name, new_members)
+        resp = yield lambda: self.network.admin_update_chat(chat_id, name, new_members)
         if not resp.get("success"):
             QMessageBox.critical(
                 self,
@@ -315,13 +304,14 @@ class ChatsTab(QWidget):
 
         self.load_chats()
 
+    @background
     def archive_chat(self):
         chat_id = self._get_selected_chat_id()
         if not chat_id:
             QMessageBox.warning(self, "No selection", "Select a chat first.")
             return
 
-        resp = self.network.admin_archive_chat(chat_id)
+        resp = yield lambda: self.network.admin_archive_chat(chat_id)
         if not resp.get("success"):
             QMessageBox.critical(
                 self,
@@ -332,13 +322,14 @@ class ChatsTab(QWidget):
 
         self.load_chats()
 
+    @background
     def unarchive_chat(self):
         chat_id = self._get_selected_chat_id()
         if not chat_id:
             QMessageBox.warning(self, "No selection", "Select a chat first.")
             return
 
-        resp = self.network.admin_unarchive_chat(chat_id)
+        resp = yield lambda: self.network.admin_unarchive_chat(chat_id)
         if not resp.get("success"):
             QMessageBox.critical(
                 self,
@@ -349,6 +340,7 @@ class ChatsTab(QWidget):
 
         self.load_chats()
 
+    @background
     def delete_chat(self):
         chat_id = self._get_selected_chat_id()
         if not chat_id:
@@ -363,7 +355,7 @@ class ChatsTab(QWidget):
         if confirm != QMessageBox.Yes:
             return
 
-        resp = self.network.admin_delete_chat(chat_id)
+        resp = yield lambda: self.network.admin_delete_chat(chat_id)
         if not resp.get("success"):
             QMessageBox.critical(
                 self,

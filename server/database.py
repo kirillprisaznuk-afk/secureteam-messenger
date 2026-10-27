@@ -1,22 +1,49 @@
+import datetime
 import sqlite3
 import threading
-import datetime
-from typing import Optional, List, Dict
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
 
 
 class Database:
     def __init__(self, path: str = "corporate_messenger.db"):
         self.path = path
         self.lock = threading.RLock()
+        self._local = threading.local()
+        with closing(self._connect()) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
         self._init_db()
 
-    def _connect(self):
-        conn = sqlite3.connect(self.path)
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.path, timeout=5)
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA busy_timeout=5000")
         conn.row_factory = sqlite3.Row
         return conn
 
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        """Nested repository calls share a short-lived transaction on this thread."""
+        with self.lock:
+            active = getattr(self._local, "connection", None)
+            if active is not None:
+                yield active
+                return
+            conn = self._connect()
+            self._local.connection = conn
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                yield conn
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+            finally:
+                self._local.connection = None
+                conn.close()
+
     def _init_db(self):
-        with self.lock, self._connect() as conn:
+        with self.transaction() as conn:
             c = conn.cursor()
 
             c.execute(
@@ -87,67 +114,78 @@ class Database:
                 """
             )
 
-            conn.commit()
+            c.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id, id)")
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_members_user ON chat_members(user_id, chat_id)"
+            )
 
     @staticmethod
     def _now() -> str:
-        return datetime.datetime.utcnow().isoformat()
+        return datetime.datetime.now(datetime.UTC).isoformat(timespec="milliseconds")
 
+    def get_user_by_username(self, username: str) -> sqlite3.Row | None:
+        with self.transaction() as conn:
+            return conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
 
-    def verify_user(self, username: str, password_hash: str) -> Optional[sqlite3.Row]:
-        with self.lock, self._connect() as conn:
-            c = conn.cursor()
-            c.execute(
-                "SELECT * FROM users WHERE username = ? AND password_hash = ? AND is_blocked = 0",
-                (username, password_hash),
+    def upgrade_password(self, user_id: int, old_hash: str, new_hash: str):
+        with self.transaction() as conn:
+            conn.execute(
+                "UPDATE users SET password_hash = ? WHERE id = ? AND password_hash = ?",
+                (new_hash, user_id, old_hash),
             )
-            return c.fetchone()
 
-    def get_user_by_id(self, user_id: int) -> Optional[sqlite3.Row]:
-        with self.lock, self._connect() as conn:
+    def user_count(self) -> int:
+        with self.transaction() as conn:
+            return conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+
+    def get_chat_members(self, chat_id: int) -> list[int]:
+        with self.transaction() as conn:
+            return [
+                row[0]
+                for row in conn.execute(
+                    "SELECT user_id FROM chat_members WHERE chat_id = ?", (chat_id,)
+                )
+            ]
+
+    def get_user_by_id(self, user_id: int) -> sqlite3.Row | None:
+        with self.transaction() as conn:
             c = conn.cursor()
             c.execute("SELECT * FROM users WHERE id = ?", (user_id,))
             return c.fetchone()
 
     def create_user(self, username: str, password_hash: str, role: str) -> int:
-        with self.lock, self._connect() as conn:
+        with self.transaction() as conn:
             c = conn.cursor()
             c.execute(
-                "INSERT INTO users (username, password_hash, role, created_at) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
                 (username, password_hash, role, self._now()),
             )
-            conn.commit()
             return c.lastrowid
 
     def update_user_role(self, user_id: int, role: str):
-        with self.lock, self._connect() as conn:
+        with self.transaction() as conn:
             c = conn.cursor()
             c.execute("UPDATE users SET role = ? WHERE id = ?", (role, user_id))
-            conn.commit()
 
     def block_user(self, user_id: int):
-        with self.lock, self._connect() as conn:
+        with self.transaction() as conn:
             c = conn.cursor()
             c.execute("UPDATE users SET is_blocked = 1 WHERE id = ?", (user_id,))
-            conn.commit()
 
     def unblock_user(self, user_id: int):
-        with self.lock, self._connect() as conn:
+        with self.transaction() as conn:
             c = conn.cursor()
             c.execute("UPDATE users SET is_blocked = 0 WHERE id = ?", (user_id,))
-            conn.commit()
 
     def delete_user(self, user_id: int):
-        with self.lock, self._connect() as conn:
+        with self.transaction() as conn:
             c = conn.cursor()
             c.execute("DELETE FROM users WHERE id = ?", (user_id,))
-            conn.commit()
 
-    def get_all_users(self) -> List[Dict]:
-        with self.lock, self._connect() as conn:
+    def get_all_users(self) -> list[dict]:
+        with self.transaction() as conn:
             c = conn.cursor()
-            c.execute("SELECT * FROM users ORDER BY id")
+            c.execute("SELECT id, username, role, is_blocked FROM users ORDER BY id LIMIT 1001")
             rows = c.fetchall()
             result = []
             for r in rows:
@@ -157,13 +195,13 @@ class Database:
                         "username": r["username"],
                         "role": r["role"],
                         "is_blocked": bool(r["is_blocked"]),
-                        "is_online": False,  
+                        "is_online": False,
                     }
                 )
             return result
 
     def create_chat(self, name: str, owner_id: int) -> int:
-        with self.lock, self._connect() as conn:
+        with self.transaction() as conn:
             c = conn.cursor()
             c.execute(
                 "INSERT INTO chats (name, owner_id, created_at) VALUES (?, ?, ?)",
@@ -174,22 +212,20 @@ class Database:
                 "INSERT OR IGNORE INTO chat_members (chat_id, user_id) VALUES (?, ?)",
                 (chat_id, owner_id),
             )
-            conn.commit()
             return chat_id
 
-    def add_chat_members(self, chat_id: int, member_ids: List[int]):
+    def add_chat_members(self, chat_id: int, member_ids: list[int]):
         if not member_ids:
             return
-        with self.lock, self._connect() as conn:
+        with self.transaction() as conn:
             c = conn.cursor()
             c.executemany(
                 "INSERT OR IGNORE INTO chat_members (chat_id, user_id) VALUES (?, ?)",
                 [(chat_id, uid) for uid in set(member_ids)],
             )
-            conn.commit()
 
-    def set_chat_members(self, chat_id: int, member_ids: List[int]):
-        with self.lock, self._connect() as conn:
+    def set_chat_members(self, chat_id: int, member_ids: list[int]):
+        with self.transaction() as conn:
             c = conn.cursor()
             c.execute("DELETE FROM chat_members WHERE chat_id = ?", (chat_id,))
             if member_ids:
@@ -197,10 +233,9 @@ class Database:
                     "INSERT OR IGNORE INTO chat_members (chat_id, user_id) VALUES (?, ?)",
                     [(chat_id, uid) for uid in set(member_ids)],
                 )
-            conn.commit()
 
-    def get_chat_list_for_user(self, user_id: int) -> List[Dict]:
-        with self.lock, self._connect() as conn:
+    def get_chat_list_for_user(self, user_id: int) -> list[dict]:
+        with self.transaction() as conn:
             c = conn.cursor()
             c.execute(
                 """
@@ -208,30 +243,31 @@ class Database:
                 FROM chats c
                 JOIN chat_members m ON m.chat_id = c.id
                 WHERE m.user_id = ?
-                ORDER BY c.id
+                ORDER BY c.id LIMIT 1001
                 """,
                 (user_id,),
             )
             rows = c.fetchall()
             return [
-                {"id": r["id"], "name": r["name"], "archived": bool(r["archived"])}
-                for r in rows
+                {"id": r["id"], "name": r["name"], "archived": bool(r["archived"])} for r in rows
             ]
 
-    def get_chat_messages(self, chat_id: int) -> List[Dict]:
-        with self.lock, self._connect() as conn:
+    def get_chat_messages(
+        self, chat_id: int, before_id: int = 2**63 - 1, limit: int = 20
+    ) -> list[dict]:
+        with self.transaction() as conn:
             c = conn.cursor()
             c.execute(
                 """
                 SELECT m.id, m.content, m.created_at, u.username AS sender
                 FROM messages m
                 JOIN users u ON u.id = m.sender_id
-                WHERE m.chat_id = ?
-                ORDER BY m.id
+                WHERE m.chat_id = ? AND m.id < ?
+                ORDER BY m.id DESC LIMIT ?
                 """,
-                (chat_id,),
+                (chat_id, before_id, limit),
             )
-            rows = c.fetchall()
+            rows = list(reversed(c.fetchall()))
             return [
                 {
                     "id": r["id"],
@@ -243,18 +279,17 @@ class Database:
             ]
 
     def add_message(self, chat_id: int, sender_id: int, content: str) -> int:
-        with self.lock, self._connect() as conn:
+        with self.transaction() as conn:
             c = conn.cursor()
             c.execute(
                 "INSERT INTO messages (chat_id, sender_id, content, created_at) "
                 "VALUES (?, ?, ?, ?)",
                 (chat_id, sender_id, content, self._now()),
             )
-            conn.commit()
             return c.lastrowid
 
-    def admin_get_all_chats(self) -> List[Dict]:
-        with self.lock, self._connect() as conn:
+    def admin_get_all_chats(self, owner_id: int | None = None) -> list[dict]:
+        with self.transaction() as conn:
             c = conn.cursor()
             c.execute(
                 """
@@ -265,8 +300,10 @@ class Database:
                        (SELECT COUNT(*) FROM chat_members m WHERE m.chat_id = c.id) AS members_count
                 FROM chats c
                 JOIN users u ON u.id = c.owner_id
-                ORDER BY c.id
-                """
+                WHERE (? IS NULL OR c.owner_id = ?)
+                ORDER BY c.id LIMIT 1001
+                """,
+                (owner_id, owner_id),
             )
             rows = c.fetchall()
             return [
@@ -280,8 +317,8 @@ class Database:
                 for r in rows
             ]
 
-    def admin_get_chat_info(self, chat_id: int) -> Optional[Dict]:
-        with self.lock, self._connect() as conn:
+    def admin_get_chat_info(self, chat_id: int) -> dict | None:
+        with self.transaction() as conn:
             c = conn.cursor()
             c.execute("SELECT * FROM chats WHERE id = ?", (chat_id,))
             chat = c.fetchone()
@@ -297,34 +334,32 @@ class Database:
                 "members": members,
             }
 
-    def admin_create_chat(self, name: str, owner_id: int, members: List[int]) -> int:
-        chat_id = self.create_chat(name, owner_id)
-        all_members = set(members)
-        all_members.add(owner_id)
-        self.add_chat_members(chat_id, list(all_members))
-        return chat_id
+    def admin_create_chat(self, name: str, owner_id: int, members: list[int]) -> int:
+        with self.transaction():
+            chat_id = self.create_chat(name, owner_id)
+            self.add_chat_members(chat_id, list(set(members) | {owner_id}))
+            return chat_id
 
-    def admin_update_chat(self, chat_id: int, name: str, members: List[int]):
-        with self.lock, self._connect() as conn:
-            c = conn.cursor()
-            c.execute("UPDATE chats SET name = ? WHERE id = ?", (name, chat_id))
-            conn.commit()
-        self.set_chat_members(chat_id, members)
+    def admin_update_chat(self, chat_id: int, name: str, members: list[int]):
+        with self.transaction() as conn:
+            chat = self.admin_get_chat_info(chat_id)
+            if not chat:
+                raise ValueError("Chat not found")
+            conn.execute("UPDATE chats SET name = ? WHERE id = ?", (name, chat_id))
+            self.set_chat_members(chat_id, sorted(set(members) | {chat["owner_id"]}))
 
     def admin_set_chat_archived(self, chat_id: int, archived: bool):
-        with self.lock, self._connect() as conn:
+        with self.transaction() as conn:
             c = conn.cursor()
             c.execute(
                 "UPDATE chats SET archived = ? WHERE id = ?",
                 (1 if archived else 0, chat_id),
             )
-            conn.commit()
 
     def admin_delete_chat(self, chat_id: int):
-        with self.lock, self._connect() as conn:
+        with self.transaction() as conn:
             c = conn.cursor()
             c.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
-            conn.commit()
 
     def add_audit_entry(
         self,
@@ -332,14 +367,11 @@ class Database:
         actor_username: str,
         action: str,
         target_type: str,
-        target_id: Optional[int],
+        target_id: int | None,
         details: str = "",
     ):
-        """
-        action: 'user.create', 'user.block', 'chat.create', 'chat.update_members' и т.п.
-        target_type: 'user' или 'chat'.
-        """
-        with self.lock, self._connect() as conn:
+        """Record an administrative mutation in the caller's transaction."""
+        with self.transaction() as conn:
             c = conn.cursor()
             c.execute(
                 """
@@ -357,11 +389,9 @@ class Database:
                     details,
                 ),
             )
-            conn.commit()
 
-    def get_audit_entries(self, limit: int = 200) -> List[Dict]:
-
-        with self.lock, self._connect() as conn:
+    def get_audit_entries(self, limit: int = 200) -> list[dict]:
+        with self.transaction() as conn:
             c = conn.cursor()
             c.execute(
                 """

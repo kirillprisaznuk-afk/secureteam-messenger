@@ -1,19 +1,18 @@
 from PyQt5.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
     QHBoxLayout,
+    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
-    QMessageBox,
+    QVBoxLayout,
+    QWidget,
 )
-from PyQt5.QtCore import Qt
 
+from client.controller import background
 from client.network import NetworkClient
 
 
 class AuditTab(QWidget):
-
     def __init__(self, network_client: NetworkClient, parent=None):
         super().__init__(parent)
         self.network = network_client
@@ -39,12 +38,11 @@ class AuditTab(QWidget):
         self.table.setEditTriggers(self.table.NoEditTriggers)
         layout.addWidget(self.table)
 
+    @background
     def load_audit(self):
-        resp = self.network.get_audit_entries()
+        resp = yield lambda: self.network.get_audit_entries()
         if not resp.get("success"):
-            QMessageBox.critical(
-                self, "Error", resp.get("error", "Failed to load audit log")
-            )
+            QMessageBox.critical(self, "Error", resp.get("error", "Failed to load audit log"))
             return
 
         entries = resp.get("entries", [])
@@ -54,7 +52,7 @@ class AuditTab(QWidget):
             self.table.setItem(row, 0, QTableWidgetItem(str(e["id"])))
             self.table.setItem(row, 1, QTableWidgetItem(e["created_at"]))
             self.table.setItem(
-                row, 2, QTableWidgetItem(f'{e["actor_username"]} (id={e["actor_id"]})')
+                row, 2, QTableWidgetItem(f"{e['actor_username']} (id={e['actor_id']})")
             )
             self.table.setItem(row, 3, QTableWidgetItem(e["action"]))
             self.table.setItem(row, 4, QTableWidgetItem(e["target_type"]))

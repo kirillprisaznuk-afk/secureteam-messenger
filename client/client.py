@@ -1,21 +1,6 @@
-import sys
-from PyQt5.QtWidgets import QApplication
-from client.network import NetworkClient
-from client.gui.login_window import LoginWindow
-from client.gui.main_window import MainWindow
+"""Compatibility module entry point: python -m client.client."""
 
-def main():
-    app = QApplication(sys.argv)
-    
-    network = NetworkClient()
-    
-    login_window = LoginWindow(network)
-    if login_window.exec_() == LoginWindow.Accepted:
-        main_window = MainWindow(network)
-        main_window.show()
-        sys.exit(app.exec_())
-    else:
-        sys.exit(0)
+from run_client import main
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

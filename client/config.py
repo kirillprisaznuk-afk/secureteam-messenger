@@ -1,11 +1,6 @@
+"""Desktop client defaults. Connection options are parsed by run_client.py."""
+
 from shared.constants import DEFAULT_HOST, DEFAULT_PORT
 
 SERVER_HOST = DEFAULT_HOST
 SERVER_PORT = DEFAULT_PORT
-RECONNECT_DELAY = 5
-MAX_RECONNECT_ATTEMPTS = 10
-WINDOW_WIDTH = 1000
-WINDOW_HEIGHT = 700
-WINDOW_TITLE = "Corporate Messenger"
-CACHE_ENABLED = True
-MAX_CACHE_SIZE = 100

@@ -1,0 +1,7 @@
+-r requirements.txt
+pytest>=8,<10
+pytest-qt>=4.4,<5
+ruff==0.14.14
+pip-audit>=2.9,<3
+# Development certificate generation and TLS integration tests only.
+cryptography>=46,<47

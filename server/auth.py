@@ -1,78 +1,84 @@
-import secrets
-from datetime import datetime, timedelta
-from typing import Optional, Tuple
-import server.config as config
+"""Argon2id authentication and bounded per-IP login throttling."""
+
+import hashlib
+import hmac
+import re
+import threading
+import time
+
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerificationError
+
+from server import config
+from shared import validation
+
+PASSWORD_HASHER = PasswordHasher()  # Maintained library's RFC 9106 low-memory profile.
+_DUMMY_HASH = PASSWORD_HASHER.hash("unused dummy verification value")
+
+
+def hash_password(password: str) -> str:
+    return PASSWORD_HASHER.hash(password)
+
+
+def verify_password(stored: str, password: str) -> bool:
+    if re.fullmatch(r"[0-9a-f]{64}", stored):
+        # Compatibility only: successful login upgrades this hash transactionally.
+        return hmac.compare_digest(stored, hashlib.sha256(password.encode()).hexdigest())
+    try:
+        return PASSWORD_HASHER.verify(stored, password)
+    except (VerificationError, InvalidHashError):
+        return False
+
 
 class AuthManager:
     def __init__(self, database):
         self.db = database
-        self.sessions = {}
-        self.login_attempts = {}
-    
-    def login(self, username: str, password: str, ip_address: str) -> Optional[Tuple]:
-        if self._is_ip_blocked(ip_address):
-            self.db.log_audit(None, "LOGIN_BLOCKED", f"IP: {ip_address}", ip_address)
-            return None
-        
-        user = self.db.verify_user(username, password)
-        if user is None:
-            self._register_failed_attempt(ip_address)
-            self.db.log_audit(None, "LOGIN_FAILED", f"User: {username}", ip_address)
-            return None
-        
-        token = secrets.token_hex(32)
-        expires_at = datetime.now() + timedelta(seconds=config.SESSION_TIMEOUT)
-        self.sessions[token] = (user.id, expires_at)
-        self._clear_failed_attempts(ip_address)
-        self.db.update_user_status(user.id, True)
-        self.db.log_audit(user.id, "LOGIN_SUCCESS", f"User: {username}", ip_address)
-        return token, user
-    
-    def logout(self, token: str, ip_address: str):
-        if token in self.sessions:
-            user_id, _ = self.sessions[token]
-            del self.sessions[token]
-            self.db.update_user_status(user_id, False)
-            self.db.log_audit(user_id, "LOGOUT", "", ip_address)
-    
-    def verify_session(self, token: str) -> Optional[int]:
-        if token not in self.sessions:
-            return None
-        user_id, expires_at = self.sessions[token]
-        if datetime.now() > expires_at:
-            del self.sessions[token]
-            self.db.update_user_status(user_id, False)
-            return None
-        return user_id
-    
-    def _is_ip_blocked(self, ip_address: str) -> bool:
-        if ip_address not in self.login_attempts:
-            return False
-        attempts, last_attempt = self.login_attempts[ip_address]
-        if attempts >= config.MAX_LOGIN_ATTEMPTS:
-            time_since_last = (datetime.now() - last_attempt).total_seconds()
-            if time_since_last < config.BLOCK_TIME:
-                return True
-            else:
-                del self.login_attempts[ip_address]
-        return False
-    
-    def _register_failed_attempt(self, ip_address: str):
-        if ip_address in self.login_attempts:
-            attempts, _ = self.login_attempts[ip_address]
-            self.login_attempts[ip_address] = (attempts + 1, datetime.now())
-        else:
-            self.login_attempts[ip_address] = (1, datetime.now())
-    
-    def _clear_failed_attempts(self, ip_address: str):
-        if ip_address in self.login_attempts:
-            del self.login_attempts[ip_address]
-    
-    def cleanup_expired_sessions(self):
-        now = datetime.now()
-        expired = [token for token, (user_id, expires_at) in self.sessions.items()
-                   if now > expires_at]
-        for token in expired:
-            user_id, _ = self.sessions[token]
-            self.db.update_user_status(user_id, False)
-            del self.sessions[token]
+        self.lock = threading.Lock()
+        self.attempts: dict[str, tuple[int, float]] = {}
+        self.hash_slots = threading.BoundedSemaphore(config.AUTH_HASH_CONCURRENCY)
+
+    def login(self, username: object, password: object, ip_address: str) -> dict:
+        # Reserve an attempt before hashing so concurrent sockets cannot bypass the limit.
+        now = time.monotonic()
+        with self.lock:
+            self.attempts = {
+                ip: entry
+                for ip, entry in self.attempts.items()
+                if now - entry[1] < config.BLOCK_TIME
+            }
+            count, started = self.attempts.get(ip_address, (0, now))
+            if (
+                count >= config.MAX_LOGIN_ATTEMPTS
+                or len(self.attempts) >= config.MAX_AUTH_TRACKED_IPS
+            ):
+                return {"success": False, "code": "RATE_LIMITED", "error": "Try again later"}
+            self.attempts[ip_address] = (count + 1, started)
+        try:
+            username = validation.text(username, "Username", maximum=128)
+            password = validation.password(password, new=False)
+        except ValueError:
+            return {"success": False, "code": "INVALID_CREDENTIALS", "error": "Invalid credentials"}
+        if not self.hash_slots.acquire(blocking=False):
+            return {"success": False, "code": "BUSY", "error": "Authentication busy; retry later"}
+        try:
+            row = self.db.get_user_by_username(username)
+            valid = verify_password(row["password_hash"] if row else _DUMMY_HASH, password)
+            if not valid or not row or row["is_blocked"]:
+                return {
+                    "success": False,
+                    "code": "INVALID_CREDENTIALS",
+                    "error": "Invalid credentials",
+                }
+            stored = row["password_hash"]
+            if not stored.startswith("$argon2id$") or PASSWORD_HASHER.check_needs_rehash(stored):
+                self.db.upgrade_password(row["id"], stored, hash_password(password))
+            with self.lock:
+                self.attempts.pop(ip_address, None)
+            return {
+                "success": True,
+                "user_id": row["id"],
+                "username": row["username"],
+                "role": row["role"],
+            }
+        finally:
+            self.hash_slots.release()
