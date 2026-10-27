@@ -2,9 +2,10 @@
 
 ## PROJECT STATUS
 
-Modernisation implemented and locally verified. Publication and the final commit
-hash are recorded in the delivery message; remote Actions results are distinct
-from local evidence. No independent production security certification is claimed.
+Modernisation implemented, verified, and published to the public repository's
+`master` branch. Local tests and all seven jobs in the first published Actions run
+passed. A final documentation checkpoint records that observed evidence; its hash
+is in the delivery message. No production security certification is claimed.
 
 ## INITIAL ARCHITECTURE FINDINGS
 
@@ -165,9 +166,9 @@ personal account database or invented screenshot mockup was used.
 
 ## GITHUB ACTIONS
 
-Configured Windows/Linux × Python 3.11/3.12/3.13, lint/format/privacy checks, pytest,
-and a runtime advisory-audit job. Remote execution results are reported separately
-in the delivery message after publication, not inferred from local tests.
+All six Windows/Linux × Python 3.11/3.12/3.13 jobs passed lint, format, privacy,
+and pytest checks. The runtime advisory audit also passed. Verified remote run:
+[40496039481](https://github.com/kirillprisaznuk-afk/secureteam-messenger/actions/runs/40496039481).
 
 ## LINT / FORMAT
 
@@ -263,15 +264,17 @@ native desktop UX require manual/platform verification.
 
 ## GIT COMMIT HASH
 
-Recorded in the final delivery message and obtainable with `git rev-parse HEAD`.
-A commit cannot embed its own hash in its committed contents.
+Validated implementation commit: `3ab878913547c538b91bfd4b2a012941c9d38530`.
+The final documentation checkpoint's hash is recorded in the delivery message and
+obtainable with `git rev-parse HEAD`; a commit cannot embed its own hash.
 
 ## GITHUB PUBLICATION STATUS
 
-Normal push to the confirmed public origin/master after the final local
-verification and privacy scan. Exact result and remote CI status are recorded in
-the final delivery message. Existing remote README history was fast-forwarded first.
-Repository description and all ten requested topics were updated successfully.
+Implementation successfully pushed to the confirmed public `origin/master` with
+a normal non-force push. All seven Actions jobs passed. Existing remote README
+history was fast-forwarded first. Repository description and all ten requested
+topics were updated successfully. Final documentation is published in a separate
+checkpoint; its observed status is recorded in the delivery message.
 
 ## GITHUB REPOSITORY URL
 
@@ -283,5 +286,5 @@ Repository description and all ten requested topics were updated successfully.
 - CORE FUNCTIONALITY VERIFIED: YES — real network, persistence, and Qt integration.
 - SECURITY CLAIMS VERIFIED: YES — scoped controls tested; limitations explicit.
 - README PORTFOLIO READY: YES — actual features, screenshots and reproducible steps.
-- PUBLIC REPOSITORY READY: pending final publication checks and observed CI result;
-  the final delivery message gives the evidence-based YES/NO.
+- PUBLIC REPOSITORY READY: YES — privacy checks passed, publication succeeded, and
+  all seven remote CI jobs passed for the validated implementation.

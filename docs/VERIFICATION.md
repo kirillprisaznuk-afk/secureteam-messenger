@@ -103,8 +103,14 @@ was verified through the equivalent package-install commands in this environment
 
 ## CI and publication evidence
 
-The workflow runs six Windows/Linux/Python 3.11–3.13 test jobs and a separate
-runtime advisory audit. Local results do not imply those remote jobs passed; use
-the actual Actions run for the published commit. The final delivery message records
-the commit hash, publication result, and observed CI result. Repository history
-was preserved and publication uses a normal push to the confirmed default branch.
+[GitHub Actions run 40496039481](https://github.com/kirillprisaznuk-afk/secureteam-messenger/actions/runs/40496039481) completed successfully for
+implementation commit `3ab878913547c538b91bfd4b2a012941c9d38530`:
+all six Windows/Linux × Python 3.11/3.12/3.13 test jobs and the dependency-audit job
+passed. This confirms the configured platform matrix remotely as well as the local
+Windows/Python 3.12 run. Native interactive desktop UX remains a manual check.
+
+The implementation was published by normal push to the confirmed public default
+branch `master`. Repository description and all ten requested topics were updated.
+A final documentation-only commit records this observed result; its hash and the
+latest publication state are in the delivery message. History was preserved and
+no private data, credentials, keys, logs, or environments were included.

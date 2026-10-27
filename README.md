@@ -2,6 +2,8 @@
 
 **Python Client–Server Messaging Application**
 
+[![Quality checks](https://github.com/kirillprisaznuk-afk/secureteam-messenger/actions/workflows/ci.yml/badge.svg)](https://github.com/kirillprisaznuk-afk/secureteam-messenger/actions/workflows/ci.yml)
+
 A native PyQt5 desktop messenger built to explore the engineering behind a stateful
 networked application: TCP framing, authentication, server-side access controls,
 concurrent clients, and durable SQLite message storage.
@@ -238,7 +240,8 @@ small datasets. Managers have ownership scope, not a model of organisational
 departments. Deleting accounts referenced by history, owned conversations, or
 audit records is prevented; block them instead. The server supports IPv4.
 
-The supported Python/OS matrix is configured in CI; local validation was on
+The Windows/Linux × Python 3.11–3.13 matrix passed in the
+[verified Actions run](https://github.com/kirillprisaznuk-afk/secureteam-messenger/actions/runs/40496039481); local validation was on
 Windows/Python 3.12. Offscreen GUI tests do not replace hands-on desktop testing
 of DPI scaling, platform window decorations, or assistive technologies.
 Upstream Qt native-library advisories require separate review; a clean Python
